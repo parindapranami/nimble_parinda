@@ -9,11 +9,12 @@ import json
 import logging
 from typing import Optional
 import aiortc
-from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack, RTCConfiguration, RTCIceServer
 from av import VideoFrame
 import fractions
 import numpy as np
 import cv2
+import time
 
 from .ball_generator import BallGenerator
 
@@ -29,12 +30,21 @@ class WebRtcHandler:
         self.peer_connection = None
         self.ball_generator = None
         self.video_task = None
+        
+        # Configure ICE servers for the server
+        self.ice_servers = [
+            RTCIceServer("stun:stun.l.google.com:19302"),
+            RTCIceServer("stun:stun1.l.google.com:19302"),
+            RTCIceServer("stun:stun2.l.google.com:19302")
+        ]
+        self.rtc_config = RTCConfiguration(iceServers=self.ice_servers)
+        
         logger.info(f"WebRtcHandler initialized for session: {session_id}")
     
     def h3_event_received(self, event):
         """Handle HTTP/3 events"""
         if hasattr(event, 'stream_id') and hasattr(event, 'data') and hasattr(event, 'stream_ended'):
-            # Handle unidirectional stream data (SDP offer or ICE candidates)
+            # Handle unidirectional stream data (SDP offer only)
             if event.stream_id not in self._stream_buffers:
                 self._stream_buffers[event.stream_id] = bytearray()
             
@@ -53,9 +63,6 @@ class WebRtcHandler:
                     if message_type == 'offer':
                         logger.info("Processing SDP offer")
                         asyncio.create_task(self.handle_sdp_offer(data))
-                    elif message_type == 'ice-candidate':
-                        logger.info("Processing ICE candidate")
-                        asyncio.create_task(self.handle_ice_candidate(data))
                     else:
                         logger.warning(f"Unknown message type: {message_type}")
                         
@@ -84,9 +91,11 @@ class WebRtcHandler:
                 logger.error("Invalid SDP offer format")
                 return
             
-            # Create RTCPeerConnection
+            # Create RTCPeerConnection with ICE configuration
             offer = RTCSessionDescription(sdp=data['sdp'], type=data['type'])
-            pc = RTCPeerConnection()
+            
+            # Configure RTCPeerConnection with ICE settings
+            pc = RTCPeerConnection(configuration=self.rtc_config)
             self.peer_connection = pc
             
             # Set up event handlers
@@ -105,20 +114,16 @@ class WebRtcHandler:
             async def on_iceconnectionstatechange():
                 logger.info(f"ICE connection state: {pc.iceConnectionState}")
                 if pc.iceConnectionState == "connected":
-                    logger.info("ICE connection established")
+                    logger.info("✅ ICE connection established")
                     await self.start_video_stream()
-                elif pc.iceConnectionState in ["failed", "closed"]:
-                    logger.info("ICE connection failed/closed")
+                elif pc.iceConnectionState == "failed":
+                    logger.error("❌ ICE connection failed")
                     await self.stop_video_stream()
-            
-            @pc.on("icecandidate")
-            async def on_icecandidate(candidate):
-                if candidate:
-                    logger.info(f"Generated ICE candidate: {candidate.candidate}")
-                    # Send ICE candidate to client asynchronously
-                    asyncio.create_task(self.send_ice_candidate(candidate))
-                else:
-                    logger.info("ICE candidate gathering complete")
+                elif pc.iceConnectionState == "checking":
+                    logger.info("🔄 ICE checking...")
+                elif pc.iceConnectionState == "closed":
+                    logger.info("🔒 ICE connection closed")
+                    await self.stop_video_stream()
             
             @pc.on("track")
             async def on_track(track: MediaStreamTrack):
@@ -131,12 +136,10 @@ class WebRtcHandler:
             logger.info("Remote description set")
             
             # Add video track BEFORE creating answer to ensure ICE candidates are generated
-            logger.debug("Creating BallVideoTrack for SDP answer")
-            self.ball_generator = BallGenerator(width=640, height=480, fps=30)
+            self.ball_generator = BallGenerator(width=640, height=480, fps=10)  # Reduced to 10 FPS
             self.ball_generator.start()
             
             video_track = BallVideoTrack(self.ball_generator)
-            logger.debug("Adding video track to peer connection")
             pc.addTrack(video_track)
             logger.info("Video track added to peer connection")
             
@@ -145,11 +148,17 @@ class WebRtcHandler:
             await pc.setLocalDescription(answer)
             logger.info("Local description set")
             
-            # Send answer back via WebTransport IMMEDIATELY
-            # Don't wait for any ICE candidate generation
+            # Wait for ICE gathering to complete
+            await self._wait_for_ice_gathering(pc)
+            
+            # Get the final answer with all candidates embedded
+            final_answer = pc.localDescription
+            logger.info("SDP answer created with all ICE candidates embedded")
+            
+            # Send answer back via WebTransport
             answer_message = {
                 'type': 'answer',
-                'sdp': answer.sdp
+                'sdp': final_answer.sdp
             }
             
             # Create a new unidirectional stream to send the answer
@@ -159,129 +168,54 @@ class WebRtcHandler:
             )
             answer_data = json.dumps(answer_message).encode()
             self._http._quic.send_stream_data(stream_id, answer_data, end_stream=True)
-            logger.info("SDP answer sent via stream IMMEDIATELY")
+            logger.info("SDP answer sent via stream")
             
         except Exception as e:
             logger.error(f"Error handling SDP offer: {e}")
             import traceback
             traceback.print_exc()
     
-    async def send_ice_candidate(self, candidate):
-        """Send ICE candidate to client"""
-        try:
-            candidate_message = {
-                'type': 'ice-candidate',
-                'candidate': candidate.candidate,
-                'sdpMid': candidate.sdpMid,
-                'sdpMLineIndex': candidate.sdpMLineIndex
-            }
-            
-            # Create a new unidirectional stream to send the ICE candidate
-            stream_id = self._http.create_webtransport_stream(
-                self._session_id, 
-                is_unidirectional=True
-            )
-            candidate_data = json.dumps(candidate_message).encode()
-            self._http._quic.send_stream_data(stream_id, candidate_data, end_stream=True)
-            logger.info(f"ICE candidate sent: {candidate.candidate}")
-            
-        except Exception as e:
-            logger.error(f"Error sending ICE candidate: {e}")
-    
-    async def handle_ice_candidate(self, raw_data: bytes):
-        """Handle ICE candidate from client"""
-        try:
-            data = json.loads(raw_data.decode())
-            logger.info(f"Received ICE candidate: {data.get('candidate', 'unknown')}")
-            
-            if self.peer_connection:
-                # Parse the candidate string to extract components
-                candidate_str = data['candidate']
-                # For aiortc, we need to parse the candidate string manually
-                # Format: candidate:foundation component protocol priority ip port typ [raddr rport] [generation] [ufrag] [network-cost]
-                parts = candidate_str.split()
-                if len(parts) >= 8 and parts[0].startswith('candidate:'):
-                    foundation = parts[0][10:]  # Remove 'candidate:' prefix
-                    component = int(parts[1])
-                    protocol = parts[2]
-                    priority = int(parts[3])
-                    ip = parts[4]
-                    port = int(parts[5])
-                    
-                    # Find the 'typ' field
-                    typ = None
-                    for i, part in enumerate(parts):
-                        if part == 'typ' and i + 1 < len(parts):
-                            typ = parts[i + 1]
-                            break
-                    
-                    if typ:
-                        candidate = aiortc.RTCIceCandidate(
-                            component=component,
-                            foundation=foundation,
-                            ip=ip,
-                            port=port,
-                            priority=priority,
-                            protocol=protocol,
-                            type=typ,
-                            sdpMid=data['sdpMid'],
-                            sdpMLineIndex=data['sdpMLineIndex']
-                        )
-                        await self.peer_connection.addIceCandidate(candidate)
-                        logger.info("ICE candidate added to peer connection")
-                    else:
-                        logger.warning(f"Could not find 'typ' field in ICE candidate: {candidate_str}")
-                else:
-                    logger.warning(f"Invalid ICE candidate format: {candidate_str}")
-            else:
-                logger.warning("No peer connection available for ICE candidate")
-                
-        except Exception as e:
-            logger.error(f"Error handling ICE candidate: {e}")
-            import traceback
-            traceback.print_exc()
+    async def _wait_for_ice_gathering(self, pc):
+        """Wait for ICE gathering to complete"""
+        if pc.iceGatheringState == 'complete':
+            logger.info("ICE gathering already complete")
+            return
+        
+        logger.info("Waiting for ICE gathering to complete...")
+        
+        # Wait for ICE gathering to complete
+        while pc.iceGatheringState != 'complete':
+            await asyncio.sleep(0.1)
+        
+        logger.info("ICE gathering completed")
     
     async def start_video_stream(self):
-        """Start the video streaming task"""
-        logger.debug("start_video_stream() called")
+        """Start video streaming"""
         if self.video_task is None:
-            logger.debug("BallGenerator already exists, creating video streaming task")
             self.video_task = asyncio.create_task(self._stream_video())
             logger.info("Video streaming started")
-        else:
-            logger.debug("Video task already exists, skipping")
     
     async def stop_video_stream(self):
-        """Stop the video streaming task"""
-        logger.debug("stop_video_stream() called")
+        """Stop video streaming"""
         if self.video_task:
-            logger.debug("Cancelling video task")
             self.video_task.cancel()
             self.video_task = None
+            logger.info("Video streaming stopped")
         
         if self.ball_generator:
-            logger.debug("Stopping ball generator")
             self.ball_generator.stop()
             self.ball_generator = None
-        
-        logger.info("Video streaming stopped")
+            logger.info("Ball generator stopped")
     
     async def _stream_video(self):
-        """Stream video frames over WebRTC"""
-        logger.debug("_stream_video() started")
+        """Stream video frames"""
         try:
-            # Video track is already added to peer connection in handle_sdp_offer
-            # Just keep the task running to maintain the ball generator
-            logger.debug("Video streaming task running, waiting...")
             while True:
-                await asyncio.sleep(1)
-                
+                await asyncio.sleep(0.1)  # 10 FPS
         except asyncio.CancelledError:
-            logger.info("Video streaming task cancelled")
+            logger.info("Video streaming cancelled")
         except Exception as e:
             logger.error(f"Error in video streaming: {e}")
-            import traceback
-            traceback.print_exc()
 
 
 class BallVideoTrack(MediaStreamTrack):
@@ -292,28 +226,34 @@ class BallVideoTrack(MediaStreamTrack):
         super().__init__()
         self.ball_generator = ball_generator
         self.frame_count = 0
-        logger.debug("BallVideoTrack initialized")
+        self.start_time = time.time()
+        logger.info("BallVideoTrack initialized")
     
     async def recv(self):
-        logger.debug(f"BallVideoTrack.recv() called, frame_count={self.frame_count}")
+        # Calculate proper timing
+        current_time = time.time()
+        frame_time = 1.0 / 10  # 10 FPS
+        expected_frame = int((current_time - self.start_time) / frame_time)
+        
         # Get frame from ball generator
         frame = self.ball_generator.get_frame()
         if frame is None:
-            logger.debug("No frame available from ball generator, creating blank frame")
             # Create a blank frame if no frame available
             frame = np.full((480, 640, 3), (50, 50, 50), dtype=np.uint8)
-        else:
-            logger.debug(f"Got frame from ball generator, shape={frame.shape}")
+            # Draw a static ball in the center
+            cv2.circle(frame, (320, 240), 20, (0, 255, 0), -1)
         
         # Convert BGR to RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        logger.debug(f"Converted frame to RGB, shape={frame_rgb.shape}")
         
-        # Create VideoFrame
+        # Create VideoFrame with proper timing
         video_frame = VideoFrame.from_ndarray(frame_rgb, format="rgb24")
-        video_frame.pts = self.frame_count
-        video_frame.time_base = fractions.Fraction(1, 30)
-        logger.debug(f"Created VideoFrame, pts={video_frame.pts}")
+        video_frame.pts = expected_frame
+        video_frame.time_base = fractions.Fraction(1, 10)  # 10 FPS time base
+        
+        # Log every 30 frames to track progress
+        if self.frame_count % 30 == 0:
+            logger.info(f"BallVideoTrack: sent frame {self.frame_count}, pts={video_frame.pts}")
         
         self.frame_count += 1
         return video_frame 

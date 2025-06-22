@@ -17,9 +17,15 @@ from .protocol import WebTransportProtocol
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+
+# Reduce verbose logging from external libraries
+logging.getLogger('aiortc').setLevel(logging.WARNING)
+logging.getLogger('aioice').setLevel(logging.WARNING)
+logging.getLogger('quic').setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 async def main():

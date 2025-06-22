@@ -3,30 +3,32 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WebRTC + WebTransport Client</title>
+    <title>Nimble Programming Challenge - 2025</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div class="container">
-      <h1>WebRTC + WebTransport Client</h1>
+      <h1>Nimble Programming Challenge - 2025</h1>
 
       <div id="status" class="status disconnected">Status: Disconnected</div>
 
-      <div>
+      <div class="controls">
         <button id="connectBtn" onclick="connect()">Connect</button>
         <button id="disconnectBtn" onclick="disconnect()" disabled>
           Disconnect
         </button>
       </div>
 
-      <div>
-        <h3>Video Stream</h3>
+      <div class="video-container">
         <video id="videoElement" autoplay playsinline muted></video>
       </div>
 
-      <div>
-        <h3>Connection Log</h3>
+      <div class="log-container">
+        <div class="log-title">Connection Log</div>
         <div id="log" class="log"></div>
+        <div class="log-footer">
+          <button class="clear-log" onclick="clearLog()">Clear Log</button>
+        </div>
       </div>
     </div>
 

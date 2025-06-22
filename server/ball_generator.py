@@ -16,20 +16,20 @@ logger = logging.getLogger(__name__)
 class BallGenerator:
     """Generates bouncing ball frames in a separate thread"""
     
-    def __init__(self, width=640, height=480, fps=30):
+    def __init__(self, width=640, height=480, fps=10):  # Reduced from 30 to 10 FPS
         self.width = width
         self.height = height
         self.fps = fps
-        self.frame_queue = Queue(maxsize=30)  # Increased buffer for frames
+        self.frame_queue = Queue(maxsize=60)  # Increased buffer size
         self.running = False
         self.thread = None
-        self.frame_count = 0  # Add frame counter for debugging
+        self.frame_count = 0
         
         # Ball properties
         self.ball_x = width // 2
         self.ball_y = height // 2
-        self.ball_vx = 3
-        self.ball_vy = 2
+        self.ball_vx = 2  # Reduced speed
+        self.ball_vy = 1  # Reduced speed
         self.ball_radius = 20
         
         # Colors (BGR format for OpenCV)
@@ -83,20 +83,18 @@ class BallGenerator:
             frame = self._create_frame()
             self.frame_count += 1
             
-            # Add to queue (non-blocking)
+            # Add to queue with better management
+            if self.frame_queue.qsize() >= self.frame_queue.maxsize * 0.8:  # 80% full
+                # Remove oldest frame to make room
+                try:
+                    self.frame_queue.get_nowait()
+                except:
+                    pass
+            
             try:
                 self.frame_queue.put_nowait(frame)
-                if self.frame_count % 30 == 0:  # Log every 30 frames to reduce spam
-                    logger.debug(f"Frame {self.frame_count} added to queue, queue size: {self.frame_queue.qsize()}")
             except:
-                # Queue is full, remove oldest frame and add new one
-                try:
-                    self.frame_queue.get_nowait()  # Remove oldest frame
-                    self.frame_queue.put_nowait(frame)  # Add new frame
-                    logger.debug(f"Queue was full, replaced oldest frame with frame {self.frame_count}")
-                except:
-                    logger.debug(f"Queue full, skipping frame {self.frame_count}")
-                    pass
+                pass
             
             # Sleep to maintain frame rate
             elapsed = time.time() - start_time
@@ -133,12 +131,9 @@ class BallGenerator:
         """Get the latest frame (non-blocking)"""
         try:
             frame = self.frame_queue.get_nowait()
-            if self.frame_count % 30 == 0:  # Log every 30 frames to reduce spam
-                logger.debug(f"Retrieved frame from queue, queue size: {self.frame_queue.qsize()}")
             return frame
         except:
             # No frame available, create a fallback frame
-            logger.debug("No frame available in queue, creating fallback frame")
             fallback_frame = np.full((self.height, self.width, 3), self.background_color, dtype=np.uint8)
             # Draw a static ball in the center
             cv2.circle(fallback_frame, (self.width // 2, self.height // 2), self.ball_radius, self.ball_color, -1)
