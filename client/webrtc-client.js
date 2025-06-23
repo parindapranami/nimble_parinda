@@ -11,6 +11,12 @@ let connectBtn = null;
 let disconnectBtn = null;
 let logDiv = null;
 
+// Ball tracking variables
+let trackingCanvas = null;
+let trackingCtx = null;
+let lastVideoTime = -1;
+let lastError = null;
+
 // WebRTC configuration
 const rtcConfig = {
   iceServers: [
@@ -19,6 +25,9 @@ const rtcConfig = {
     { urls: "stun:stun2.l.google.com:19302" },
   ],
 };
+
+// Add a flag to only log the error feedback info once
+let errorFeedbackLogged = false;
 
 // Function to force H.264 codec in SDP -
 function forceH264(sdp) {
@@ -84,7 +93,7 @@ function forceH264(sdp) {
 
       const newMLine = [...header, ...filteredPayloads].join(" ");
       newLines.push(newMLine);
-      console.log(`✅ Rewrote m-line: ${newMLine}`);
+      console.log(`✅ Rewritten m-line: ${newMLine}`);
     } else if (
       inVideoSection &&
       (line.startsWith("a=rtpmap:") ||
@@ -141,8 +150,9 @@ async function connect() {
     updateStatus("Connecting...", "connecting");
     connectBtn.disabled = true;
 
-    log("Requirement 3: Creating WebRTC SDP offer...");
-    log("Requirement 4: Establishing WebTransport connection to server");
+    log("Requirement 1: Simple web app client initialized");
+    log("Requirement 2: Client ready to connect to server");
+    log("Click Connect to start WebRTC + WebTransport connection");
 
     // Connect to WebTransport
     webTransport = new WebTransport("https://localhost:4433/connection");
@@ -152,18 +162,13 @@ async function connect() {
 
     // Create WebRTC peer connection
     peerConnection = new RTCPeerConnection(rtcConfig);
-    log("Requirement 3: WebRTC peer connection created");
 
     // Create offer
-    log("Requirement 3: Creating SDP offer...");
-
-    // Wait for all ICE candidates to be gathered before creating offer
     const offer = await peerConnection.createOffer({
       offerToReceiveVideo: true,
       offerToReceiveAudio: false,
     });
 
-    log("Requirement 7: Forcing H.264 codec in client-side SDP");
     offer.sdp = forceH264(offer.sdp);
 
     // Set local description to trigger ICE gathering
@@ -185,7 +190,6 @@ async function connect() {
 
     // Get the final offer with all candidates embedded
     const finalOffer = peerConnection.localDescription;
-    log("Requirement 3: SDP offer created with all ICE candidates embedded");
 
     // Send offer via unidirectional stream
     const writer = (
@@ -205,12 +209,7 @@ async function connect() {
 
     // Handle incoming tracks
     peerConnection.ontrack = (event) => {
-      log("Requirement 8: Received remote track from server");
       if (event.track.kind === "video") {
-        log(
-          "Requirement 8: Video track received, preparing to display in browser"
-        );
-
         // Requirement 7: Verify the active video codec
         // This is the correct way to check the active codec, not just the list of supported ones.
         const checkCodec = async () => {
@@ -268,35 +267,67 @@ async function connect() {
 
         // Add event listeners to video element
         videoElement.onloadedmetadata = () => {
-          log(
-            `Requirement 8a: Video ready for display: ${videoElement.videoWidth}x${videoElement.videoHeight}`
-          );
-          // Try to play immediately when metadata is loaded
           videoElement.play().catch((e) => log(`Auto-play failed: ${e}`));
         };
 
-        videoElement.onplay = () => {
-          log("Requirement 8a: Video playback started in browser");
-        };
+        videoElement.onplay = () => {};
 
         videoElement.onerror = (e) => {
           log(`Video error: ${e}`);
         };
 
-        videoElement.oncanplay = () => {
-          log("Requirement 8a: Video can play in browser");
-        };
+        videoElement.oncanplay = () => {};
 
-        videoElement.onloadeddata = () => {
-          log("Requirement 8a: Video data loaded in browser");
-        };
+        videoElement.onloadeddata = () => {};
 
-        videoElement.onwaiting = () => {
-          log("Video waiting for data");
-        };
+        videoElement.onwaiting = () => {};
 
+        // Set up coordinate-sending onplaying handler here:
         videoElement.onplaying = () => {
-          log("Requirement 8a: Video is playing in browser");
+          log(
+            "[onplaying] Video is playing in browser, starting coordinate sending loop"
+          );
+
+          setupBallTracking();
+
+          const canvas = document.getElementById("hiddenCanvas");
+          const ctx = canvas.getContext("2d");
+
+          function trackLoop() {
+            const pos = estimateBallCenterFromVideo(videoElement, canvas, ctx);
+            if (pos) {
+              // Ball center estimated, send to server
+              if (webTransport) {
+                webTransport
+                  .createUnidirectionalStream()
+                  .then((stream) => {
+                    const writer = stream.getWriter();
+                    const message = JSON.stringify({
+                      type: "coords",
+                      x: pos.x,
+                      y: pos.y,
+                    });
+                    // No log for sending coordinates
+                    writer
+                      .write(new TextEncoder().encode(message))
+                      .then(() => writer.close())
+                      .catch((err) =>
+                        console.error(
+                          `[BallCoord] Error writing coordinates to server: ${err}`
+                        )
+                      );
+                  })
+                  .catch((err) =>
+                    console.error(
+                      `[BallCoord] Error creating unidirectional stream: ${err}`
+                    )
+                  );
+              }
+            }
+            requestAnimationFrame(trackLoop);
+          }
+
+          requestAnimationFrame(trackLoop);
         };
 
         // Try to play the video immediately
@@ -315,12 +346,11 @@ async function connect() {
 
     // Handle connection state changes
     peerConnection.onconnectionstatechange = () => {
-      log(`Connection state: ${peerConnection.connectionState}`);
       if (peerConnection.connectionState === "connected") {
         updateStatus("Connected", "connected");
         disconnectBtn.disabled = false;
-        log("Requirement 3: WebRTC connection established successfully");
-        log("Requirement 4: WebTransport connection active");
+        log("WebRTC connection established successfully");
+        log("WebTransport connection active");
         log("Ready to receive video stream from server");
       } else if (
         peerConnection.connectionState === "failed" ||
@@ -337,7 +367,6 @@ async function connect() {
 
     // Handle ICE connection state changes
     peerConnection.oniceconnectionstatechange = () => {
-      log(`ICE connection state: ${peerConnection.iceConnectionState}`);
       if (peerConnection.iceConnectionState === "connected") {
         log("ICE connection established");
       } else if (
@@ -351,9 +380,7 @@ async function connect() {
     };
 
     // Handle signaling state changes
-    peerConnection.onsignalingstatechange = () => {
-      log(`Signaling state: ${peerConnection.signalingState}`);
-    };
+    peerConnection.onsignalingstatechange = () => {};
 
     // Read answer from incoming unidirectional stream
     const incomingStream =
@@ -370,7 +397,34 @@ async function connect() {
   }
 }
 
-// Function to handle incoming streams (SDP answer only)
+// Listen for error messages from server and display them
+function displayError(error, data) {
+  // Only log to the browser console, not to the UI log
+  console.log(`[ERROR FEEDBACK] Error from server: ${error}`);
+  let errorDiv = document.getElementById("errorDiv");
+  if (!errorDiv) {
+    errorDiv = document.createElement("div");
+    errorDiv.id = "errorDiv";
+    errorDiv.style.margin = "10px 0";
+    errorDiv.style.fontWeight = "bold";
+    errorDiv.style.color = "#d32f2f";
+    document
+      .querySelector(".container")
+      .insertBefore(errorDiv, document.querySelector(".log-container"));
+  }
+  errorDiv.textContent = `Ball detection error: ${error}`;
+  if (
+    data &&
+    data.client_x !== undefined &&
+    data.client_y !== undefined &&
+    data.true_x !== undefined &&
+    data.true_y !== undefined
+  ) {
+    errorDiv.textContent += ` | Your: (${data.client_x}, ${data.client_y}) | True: (${data.true_x}, ${data.true_y})`;
+  }
+}
+
+// Patch handleIncomingStreams to only log error feedback info once
 async function handleIncomingStreams(incomingStream) {
   try {
     while (true) {
@@ -380,7 +434,6 @@ async function handleIncomingStreams(incomingStream) {
         break;
       }
 
-      log("Requirement 5: Received incoming stream from server");
       const reader = stream.getReader();
       const { value: response } = await reader.read();
       const decoder = new TextDecoder();
@@ -392,6 +445,14 @@ async function handleIncomingStreams(incomingStream) {
           new RTCSessionDescription(data)
         );
         log("Requirement 5: Remote description set from server response");
+      } else if (data.type === "error") {
+        if (!errorFeedbackLogged) {
+          log(
+            "Ball error feedback is now being calculated by the server and displayed below the video."
+          );
+          errorFeedbackLogged = true;
+        }
+        displayError(data.error, data);
       } else {
         log(`Unknown message type: ${data.type}`);
       }
@@ -444,6 +505,10 @@ function initializeClient() {
   disconnectBtn = document.getElementById("disconnectBtn");
   logDiv = document.getElementById("log");
 
+  // Hidden canvas for red ball detection
+  window.canvas = document.getElementById("hiddenCanvas");
+  window.ctx = window.canvas.getContext("2d");
+
   // Handle page unload
   window.addEventListener("beforeunload", () => {
     disconnect();
@@ -468,3 +533,47 @@ window.connect = connect;
 window.disconnect = disconnect;
 window.initializeClient = initializeClient;
 window.clearLog = clearLog;
+
+function setupBallTracking() {
+  // Create a hidden canvas for frame extraction
+  trackingCanvas = document.createElement("canvas");
+  trackingCanvas.width = 640;
+  trackingCanvas.height = 480;
+  trackingCanvas.style.display = "none";
+  document.body.appendChild(trackingCanvas);
+  trackingCtx = trackingCanvas.getContext("2d");
+}
+
+// Estimate ball center by scanning for a specific color (green ball)
+function estimateBallCenterFromVideo(videoElement, canvas, ctx) {
+  ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+  const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = frame.data;
+
+  let totalX = 0;
+  let totalY = 0;
+  let count = 0;
+
+  // Thresholds for detecting "green"
+  for (let y = 0; y < canvas.height; y++) {
+    for (let x = 0; x < canvas.width; x++) {
+      const i = (y * canvas.width + x) * 4;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      // Simple green ball detection
+      if (g > 150 && g > r + 60 && g > b + 60) {
+        totalX += x;
+        totalY += y;
+        count++;
+      }
+    }
+  }
+
+  if (count === 0) return null;
+
+  const cx = Math.round(totalX / count);
+  const cy = Math.round(totalY / count);
+
+  return { x: cx, y: cy };
+}

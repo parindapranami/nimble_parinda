@@ -44,7 +44,7 @@ class WebRtcHandler:
     def h3_event_received(self, event):
         """Handle HTTP/3 events"""
         if hasattr(event, 'stream_id') and hasattr(event, 'data') and hasattr(event, 'stream_ended'):
-            # Handle unidirectional stream data (SDP offer only)
+            # Handle unidirectional stream data (SDP offer or coords)
             if event.stream_id not in self._stream_buffers:
                 self._stream_buffers[event.stream_id] = bytearray()
             
@@ -63,6 +63,9 @@ class WebRtcHandler:
                     if message_type == 'offer':
                         logger.info("Processing SDP offer")
                         asyncio.create_task(self.handle_sdp_offer(data))
+                    elif message_type == 'coords':
+                        logger.info(f"Received coords from client: {message}")
+                        asyncio.create_task(self.handle_client_coords(message))
                     else:
                         logger.warning(f"Unknown message type: {message_type}")
                         
@@ -216,6 +219,42 @@ class WebRtcHandler:
             logger.info("Video streaming cancelled")
         except Exception as e:
             logger.error(f"Error in video streaming: {e}")
+
+    async def handle_client_coords(self, message):
+        """Compute error and send it back to the client via WebTransport"""
+        try:
+            x = message.get('x')
+            y = message.get('y')
+            logger.info(f"handle_client_coords: received coords from client: x={x}, y={y}")
+            if x is None or y is None:
+                logger.warning("Received coords missing x or y")
+                return
+            # Get the true ball center from the ball generator
+            if self.ball_generator:
+                true_x = int(self.ball_generator.ball_x)
+                true_y = int(self.ball_generator.ball_y)
+                error = ((x - true_x) ** 2 + (y - true_y) ** 2) ** 0.5
+                logger.info(f"Computed error: {error:.2f} (client: ({x},{y}), true: ({true_x},{true_y}))")
+            else:
+                error = None
+                logger.warning("Ball generator not running, cannot compute error")
+            # Send error back to client
+            error_message = {
+                'type': 'error',
+                'error': error if error is not None else 'N/A',
+                'client_x': x,
+                'client_y': y,
+                'true_x': true_x if self.ball_generator else None,
+                'true_y': true_y if self.ball_generator else None
+            }
+            logger.info(f"Sending error message to client: {error_message}")
+            stream_id = self._http.create_webtransport_stream(
+                self._session_id,
+                is_unidirectional=True
+            )
+            self._http._quic.send_stream_data(stream_id, json.dumps(error_message).encode(), end_stream=True)
+        except Exception as e:
+            logger.error(f"Error in handle_client_coords: {e}")
 
 
 class BallVideoTrack(MediaStreamTrack):

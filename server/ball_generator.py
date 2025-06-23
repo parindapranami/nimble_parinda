@@ -19,7 +19,7 @@ class BallGenerator:
     def __init__(self, width=640, height=480, fps=30):  
         self.width = width
         self.height = height
-        self.fps = fps
+        self.fps = 30  # Increased FPS for smoother motion
         self.frame_queue = Queue(maxsize=60)  
         self.running = False
         self.thread = None
@@ -28,15 +28,15 @@ class BallGenerator:
         # Ball properties
         self.ball_x = width // 2
         self.ball_y = height // 2
-        self.ball_vx = 2
-        self.ball_vy = 1
-        self.ball_radius = 20
+        self.ball_vx = 1  # Slower horizontal speed
+        self.ball_vy = 0.1  # Slower vertical speed
+        self.ball_radius = 30  # Bigger ball for visibility
         
         # Colors (BGR format for OpenCV)
         self.background_color = (50, 50, 50)  # Dark gray
         self.ball_color = (0, 255, 0)  # Green ball
         
-        logger.debug(f"BallGenerator initialized: {width}x{height} @ {fps}fps")
+        logger.debug(f"BallGenerator initialized: {width}x{height} @ {self.fps}fps")
         
     def start(self):
         """Start the ball generation thread"""
