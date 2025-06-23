@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webrtc-server
+  namespace: webrtc-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webrtc-server
+  template:
+    metadata:
+      labels:
+        app: webrtc-server
+    spec:
+      containers:
+        - name: webrtc-server
+          image: webrtc-server:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 4433
+          env:
+            - name: PYTHONPATH
+              value: "/app"
+          volumeMounts:
+            - name: certs
+              mountPath: /app/certs
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "200m"
+      volumes:
+        - name: certs
+          secret:
+            secretName: webrtc-certs

@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webrtc-config
+  namespace: webrtc-app
+data:
+  host: "0.0.0.0"
+  port: "4433"
