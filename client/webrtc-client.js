@@ -20,6 +20,107 @@ const rtcConfig = {
   ],
 };
 
+// Function to force H.264 codec in SDP -
+function forceH264(sdp) {
+  console.log("🔧 Forcing H.264 codec in client-side SDP");
+  const lines = sdp.split("\r\n");
+
+  const h264PayloadTypes = new Set();
+  const codecsToKeep = new Set();
+
+  // Step 1: Find H.264 payload types
+  for (const line of lines) {
+    if (line.startsWith("a=rtpmap:") && line.includes("H264")) {
+      const parts = line.split(" ");
+      const pt = parts[0].split(":")[1];
+      h264PayloadTypes.add(pt);
+    }
+  }
+
+  if (h264PayloadTypes.size === 0) {
+    console.warn("⚠️ No H.264 payload types found in SDP, returning original");
+    return sdp;
+  }
+
+  h264PayloadTypes.forEach((pt) => codecsToKeep.add(pt));
+
+  // Step 2: Find RTX payload types associated with H.264
+  for (const line of lines) {
+    if (line.startsWith("a=fmtp:") && line.includes("apt=")) {
+      const parts = line.split(" ");
+      const rtxPt = parts[0].split(":")[1];
+      const aptMatch = line.match(/apt=(\d+)/);
+      if (aptMatch && h264PayloadTypes.has(aptMatch[1])) {
+        codecsToKeep.add(rtxPt);
+      }
+    }
+  }
+
+  console.log(
+    `🎯 Codecs to keep (H.264 + RTX): ${[...codecsToKeep].join(", ")}`
+  );
+
+  // Step 3: Rebuild SDP
+  const newLines = [];
+  let inVideoSection = false;
+
+  for (const line of lines) {
+    if (line.startsWith("m=video")) {
+      inVideoSection = true;
+      const parts = line.trim().split(" ");
+      const header = parts.slice(0, 3);
+      const payloadTypes = parts.slice(3);
+
+      const filteredPayloads = payloadTypes.filter((pt) =>
+        codecsToKeep.has(pt)
+      );
+      if (filteredPayloads.length === 0) {
+        console.warn(
+          "⚠️ No matching H.264 payloads found for m=video, keeping original"
+        );
+        newLines.push(line);
+        continue;
+      }
+
+      const newMLine = [...header, ...filteredPayloads].join(" ");
+      newLines.push(newMLine);
+      console.log(`✅ Rewrote m-line: ${newMLine}`);
+    } else if (
+      inVideoSection &&
+      (line.startsWith("a=rtpmap:") ||
+        line.startsWith("a=fmtp:") ||
+        line.startsWith("a=rtcp-fb:"))
+    ) {
+      try {
+        const pt = line.split(":")[1].split(" ")[0];
+        if (codecsToKeep.has(pt)) {
+          newLines.push(line);
+        }
+      } catch {
+        newLines.push(line);
+      }
+    } else if (line.startsWith("m=")) {
+      inVideoSection = false;
+      newLines.push(line);
+    } else {
+      newLines.push(line);
+    }
+  }
+
+  // Safety check
+  const hasVideoMLine = newLines.some((l) => l.startsWith("m=video"));
+  const hasH264 = newLines.some((l) => l.includes("H264"));
+  if (!hasVideoMLine || !hasH264) {
+    console.error(
+      "❌ SDP rewrite failed, missing m=video or H264. Reverting to original SDP."
+    );
+    return sdp;
+  }
+
+  console.log("✅ SDP modification complete");
+  return newLines.join("\r\n");
+}
+
 // Logging function
 function log(message) {
   const timestamp = new Date().toLocaleTimeString();
@@ -61,6 +162,9 @@ async function connect() {
       offerToReceiveVideo: true,
       offerToReceiveAudio: false,
     });
+
+    log("Requirement 7: Forcing H.264 codec in client-side SDP");
+    offer.sdp = forceH264(offer.sdp);
 
     // Set local description to trigger ICE gathering
     await peerConnection.setLocalDescription(offer);
@@ -106,6 +210,51 @@ async function connect() {
         log(
           "Requirement 8: Video track received, preparing to display in browser"
         );
+
+        // Requirement 7: Verify the active video codec
+        // This is the correct way to check the active codec, not just the list of supported ones.
+        const checkCodec = async () => {
+          try {
+            if (
+              peerConnection &&
+              typeof peerConnection.getStats === "function"
+            ) {
+              const stats = await peerConnection.getStats();
+              let activeCodec;
+              stats.forEach((report) => {
+                if (report.type === "inbound-rtp" && report.kind === "video") {
+                  const codecId = report.codecId;
+                  if (codecId) {
+                    const codecReport = stats.get(codecId);
+                    if (codecReport) {
+                      activeCodec = codecReport;
+                    }
+                  }
+                }
+              });
+
+              if (activeCodec) {
+                if (activeCodec.mimeType.toLowerCase() === "video/h264") {
+                  log(
+                    `Requirement 7: VERIFIED - Active codec is H.264. MimeType: ${activeCodec.mimeType}, ClockRate: ${activeCodec.clockRate}`
+                  );
+                } else {
+                  log(
+                    `Requirement 7: WARNING - Active codec is NOT H.264. Active codec: ${activeCodec.mimeType}`
+                  );
+                }
+              } else {
+                log(
+                  "Requirement 7: Could not determine active codec from stats."
+                );
+              }
+            }
+          } catch (e) {
+            log(`Could not verify codec using getStats(): ${e.message}`);
+          }
+        };
+        // Run the check after a short delay to allow the connection to be fully established.
+        setTimeout(checkCodec, 1000);
 
         // Set video element properties
         videoElement.autoplay = true;

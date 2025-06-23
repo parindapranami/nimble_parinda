@@ -16,11 +16,11 @@ logger = logging.getLogger(__name__)
 class BallGenerator:
     """Generates bouncing ball frames in a separate thread"""
     
-    def __init__(self, width=640, height=480, fps=10):  # Reduced from 30 to 10 FPS
+    def __init__(self, width=640, height=480, fps=30):  
         self.width = width
         self.height = height
         self.fps = fps
-        self.frame_queue = Queue(maxsize=60)  # Increased buffer size
+        self.frame_queue = Queue(maxsize=60)  
         self.running = False
         self.thread = None
         self.frame_count = 0
@@ -28,8 +28,8 @@ class BallGenerator:
         # Ball properties
         self.ball_x = width // 2
         self.ball_y = height // 2
-        self.ball_vx = 2  # Reduced speed
-        self.ball_vy = 1  # Reduced speed
+        self.ball_vx = 2
+        self.ball_vy = 1
         self.ball_radius = 20
         
         # Colors (BGR format for OpenCV)
