@@ -54,4 +54,23 @@ config/*.key
 
 # Temporary files
 *.tmp
-*.temp 
+*.temp
+
+# Certificates (don't commit to GitHub)
+certs/
+*.pem
+*.key
+*.crt
+
+# Docker
+.dockerignore
+
+# pytest cache
+.pytest_cache/
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover 

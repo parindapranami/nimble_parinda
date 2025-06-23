@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  webrtc-server:
+    build: .
+    ports:
+      - "4433:4433"
+    volumes:
+      - ./certs:/app/certs
+    restart: unless-stopped
+
+  webrtc-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    profiles:
+      - test 
