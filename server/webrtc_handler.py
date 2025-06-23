@@ -30,6 +30,7 @@ class WebRtcHandler:
         self.peer_connection = None
         self.ball_generator = None
         self.video_task = None
+        self._tasks = set()  # Track all created asyncio tasks
         
         # Configure ICE servers for the server
         self.ice_servers = [
@@ -62,10 +63,14 @@ class WebRtcHandler:
                     
                     if message_type == 'offer':
                         logger.info("Processing SDP offer")
-                        asyncio.create_task(self.handle_sdp_offer(data))
+                        task = asyncio.create_task(self.handle_sdp_offer(data))
+                        self._tasks.add(task)
+                        task.add_done_callback(self._tasks.discard)
                     elif message_type == 'coords':
                         logger.info(f"Received coords from client: {message}")
-                        asyncio.create_task(self.handle_client_coords(message))
+                        task = asyncio.create_task(self.handle_client_coords(message))
+                        self._tasks.add(task)
+                        task.add_done_callback(self._tasks.discard)
                     else:
                         logger.warning(f"Unknown message type: {message_type}")
                         
@@ -117,15 +122,15 @@ class WebRtcHandler:
             async def on_iceconnectionstatechange():
                 logger.info(f"ICE connection state: {pc.iceConnectionState}")
                 if pc.iceConnectionState == "connected":
-                    logger.info("✅ ICE connection established")
+                    logger.info("ICE connection established")
                     await self.start_video_stream()
                 elif pc.iceConnectionState == "failed":
-                    logger.error("❌ ICE connection failed")
+                    logger.error("ICE connection failed")
                     await self.stop_video_stream()
                 elif pc.iceConnectionState == "checking":
-                    logger.info("🔄 ICE checking...")
+                    logger.info("ICE checking...")
                 elif pc.iceConnectionState == "closed":
-                    logger.info("🔒 ICE connection closed")
+                    logger.info("ICE connection closed")
                     await self.stop_video_stream()
             
             @pc.on("track")
@@ -139,7 +144,7 @@ class WebRtcHandler:
             logger.info("Remote description set")
             
             # Add video track BEFORE creating answer to ensure ICE candidates are generated
-            self.ball_generator = BallGenerator(width=640, height=480, fps=10)  # Reduced to 10 FPS
+            self.ball_generator = BallGenerator(width=640, height=480, fps=30)  # Reduced to 10 FPS
             self.ball_generator.start()
             
             video_track = BallVideoTrack(self.ball_generator)
@@ -255,6 +260,17 @@ class WebRtcHandler:
             self._http._quic.send_stream_data(stream_id, json.dumps(error_message).encode(), end_stream=True)
         except Exception as e:
             logger.error(f"Error in handle_client_coords: {e}")
+
+    async def cleanup(self):
+        """Cancel all pending tasks and close peer connection cleanly."""
+        logger.info("WebRtcHandler cleanup: Cancelling all pending tasks and closing peer connection.")
+        for task in list(self._tasks):
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
+        if self.peer_connection:
+            await self.peer_connection.close()
+        await self.stop_video_stream()
 
 
 class BallVideoTrack(MediaStreamTrack):

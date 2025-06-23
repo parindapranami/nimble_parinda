@@ -19,7 +19,7 @@ class BallGenerator:
     def __init__(self, width=640, height=480, fps=30):  
         self.width = width
         self.height = height
-        self.fps = 30  # Increased FPS for smoother motion
+        self.fps = fps  # Increased FPS for smoother motion
         self.frame_queue = Queue(maxsize=60)  
         self.running = False
         self.thread = None
@@ -46,7 +46,8 @@ class BallGenerator:
             self.thread.start()
             logger.info(f"Ball generator started at {self.fps} FPS")
         else:
-            logger.debug("Ball generator already running")
+            # logger.debug("Ball generator already running")
+            pass
     
     def stop(self):
         """Stop the ball generation thread"""

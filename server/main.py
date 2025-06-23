@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 WebTransport + WebRTC Server Main Entry Point
 """
@@ -9,19 +8,20 @@ import ssl
 import sys
 import os
 import argparse
+import signal
 
 from aioquic.asyncio import serve
 from aioquic.quic.configuration import QuicConfiguration
 
 from .protocol import WebTransportProtocol
 
-# Configure logging
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# Reduce verbose logging from external libraries
+
 logging.getLogger('aiortc').setLevel(logging.WARNING)
 logging.getLogger('aioice').setLevel(logging.WARNING)
 logging.getLogger('quic').setLevel(logging.WARNING)
@@ -38,7 +38,7 @@ async def main():
     
     args = parser.parse_args()
     
-    # Load SSL certificate and key
+    
     cert_file = args.cert
     key_file = args.key
     
@@ -66,17 +66,42 @@ async def main():
     
     logger.info(f"Starting WebTransport server on {host}:{port}")
     
+    stop_event = asyncio.Event()
+
+    def handle_signal():
+        logger.info("Shutdown signal received, stopping server...")
+        stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, handle_signal)
+        except NotImplementedError:
+            
+            pass
+
     try:
-        await serve(
+        server = await serve(
             host,
             port,
             configuration=quic_config,
             create_protocol=WebTransportProtocol,
         )
-        logger.info("Server started successfully")
         
-        # Keep the server running
-        await asyncio.Future() 
+
+        # await asyncio.Future() 
+        logger.info("Server started successfully")
+
+        await stop_event.wait()
+        logger.info("Shutting down gracefully...")
+        server.close()
+ 
+        for protocol in list(server._protocols):
+            handler = getattr(protocol, '_handler', None)
+            if handler and hasattr(handler, 'cleanup'):
+                await handler.cleanup()
+
+        await asyncio.sleep(0.5)
         
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
