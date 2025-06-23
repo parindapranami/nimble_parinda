@@ -1,6 +1,6 @@
-# WebRTC + WebTransport Bouncing Ball Application
+# Nimble: WebRTC + WebTransport Bouncing Ball Application
 
-I built this real-time video streaming app to fulfill specific requirements for a programming challenge. The goal was to create a WebRTC + WebTransport system where a server generates a bouncing ball video stream and a client tracks the ball position, with real-time error feedback.
+This is my submission for the interview process at Nimble for SDE 1. The goal was to create a WebRTC + WebTransport system where a server generates a bouncing ball video stream and a client tracks the ball position, with real-time error feedback.
 
 ## Requirements Fulfilled
 
@@ -15,38 +15,14 @@ I built this real-time video streaming app to fulfill specific requirements for 
 - ✅ Docker and Kubernetes deployment
 - ✅ Complete documentation
 
-## What I Made
-
-- **Real-time Video Streaming**: WebRTC video stream with H.264 encoding
-- **Ball Tracking**: Client-side green ball detection and coordinate estimation
-- **Error Feedback**: Server-side error calculation and feedback
-- **WebTransport**: Modern transport protocol for signaling
-- **Docker Support**: Containerized deployment
-- **Unit Tests**: Comprehensive test coverage
-
-## How I Structured It
-
-```
-Nimble/
-├── client/                 # Web client (HTML, CSS, JS)
-├── server/                 # Python WebRTC server
-│   ├── main.py            # Server entry point
-│   ├── webrtc_handler.py  # WebRTC connection handling
-│   └── ball_generator.py  # Bouncing ball video generation
-├── tests/                  # Unit tests
-├── k8s/                   # Kubernetes manifests
-├── Dockerfile             # Production Docker image
-├── docker-compose.yml     # Docker deployment
-└── requirements.txt       # Python dependencies
-```
-
 ## Getting Started
 
 ### Prerequisites
 
 - Python 3.11+
-- Docker (optional)
+- Docker 
 - kubectl (for Kubernetes)
+- I am using my personal macOS for the project. 
 
 ### Local Development
 
@@ -75,7 +51,7 @@ Nimble/
    ```
 
 5. **Open client:**
-   - Navigate to `client/index.html` in your browser
+   - Open the file locally --> client/index.html
    - Click "Connect" to start the WebRTC connection
 
 ### Docker Deployment
@@ -93,8 +69,6 @@ Nimble/
 
 ### Kubernetes Deployment
 
-I also set up Kubernetes deployment for when you want to scale this up:
-
 #### Using Minikube (easiest)
 
 1. **Install minikube:**
@@ -102,10 +76,6 @@ I also set up Kubernetes deployment for when you want to scale this up:
    ```bash
    # mac
    brew install minikube
-
-   # linux
-   curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
-   sudo install minikube-linux-amd64 /usr/local/bin/minikube
    ```
 
 2. **Start minikube:**
@@ -190,7 +160,7 @@ kubectl delete namespace webrtc-app
 
 ## Testing
 
-The project includes comprehensive unit tests:
+I have 3 tests for the major functions:
 
 - **BallGenerator**: Tests ball animation and frame generation
 - **WebRtcHandler**: Tests WebRTC connection handling
@@ -235,7 +205,7 @@ I calculate error as Euclidean distance between detected and actual ball centers
 
 ### Non-Trickle ICE
 
-I initially spent a lot fo time to do manual ICE candidate exchange but later discovered that it was overkill since I was running both client and server on same network so need s=for NAT traversal, so I remove it later and used non-trickle ICE where all candidates are embedded in the SDP. This simplified the signaling and made it more reliable for localhost testing.
+I initially spent a lot of time to do manual ICE candidate exchange but later discovered that it was overkill since I was running both client and server on same network so no need for NAT traversal, so I removed it later and used non-trickle ICE where all candidates are embedded in the SDP. This simplified the signaling.
 
 ### Frame Rate
 
@@ -243,4 +213,5 @@ The client-side ball tracking was fun to implement - I used canvas to detect the
 
 ## License
 
-This project is part of the Nimble Programming Challenge 2025.
+This project is part of the Nimble Programming Challenge 2025. Developed by Parinda Pranami https://www.linkedin.com/in/parindapranami/
+
