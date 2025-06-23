@@ -1,8 +1,4 @@
-#!/usr/bin/env python3
-"""
-Ball Generator Module
-Generates bouncing ball frames in a separate thread
-"""
+# This file generates bouncing ball frames in a separate thread
 
 import threading
 import time
@@ -14,27 +10,25 @@ import logging
 logger = logging.getLogger(__name__)
 
 class BallGenerator:
-    """Generates bouncing ball frames in a separate thread"""
-    
+
     def __init__(self, width=640, height=480, fps=30):  
         self.width = width
         self.height = height
-        self.fps = fps  # Increased FPS for smoother motion
-        self.frame_queue = Queue(maxsize=60)  
+        self.fps = fps
+        self.frame_queue = Queue(maxsize=60)
         self.running = False
         self.thread = None
         self.frame_count = 0
         
-        # Ball properties
+        # Ball starting position and movement
         self.ball_x = width // 2
         self.ball_y = height // 2
-        self.ball_vx = 1  # Slower horizontal speed
-        self.ball_vy = 0.1  # Slower vertical speed
-        self.ball_radius = 30  # Bigger ball for visibility
+        self.ball_vx = 2
+        self.ball_vy = 1
+        self.ball_radius = 25
         
-        # Colors (BGR format for OpenCV)
-        self.background_color = (50, 50, 50)  # Dark gray
-        self.ball_color = (0, 255, 0)  # Green ball
+        self.background_color = (50, 50, 50)
+        self.ball_color = (0, 255, 0)
         
         logger.debug(f"BallGenerator initialized: {width}x{height} @ {self.fps}fps")
         
@@ -50,27 +44,14 @@ class BallGenerator:
             pass
     
     def stop(self):
-        """Stop the ball generation thread"""
         self.running = False
         if self.thread:
             self.thread.join(timeout=1.0)
         logger.info("Ball generator stopped")
     
     def set_fps(self, fps):
-        """Change the frame rate"""
         self.fps = fps
         logger.info(f"Frame rate changed to {self.fps} FPS")
-    
-    def set_ball_speed(self, vx, vy):
-        """Change ball movement speed"""
-        self.ball_vx = vx
-        self.ball_vy = vy
-        logger.info(f"Ball speed changed to vx={vx}, vy={vy}")
-    
-    def set_ball_size(self, radius):
-        """Change ball size"""
-        self.ball_radius = radius
-        logger.info(f"Ball size changed to radius={radius}")
     
     def _generate_frames(self):
         """Generate frames in a separate thread"""
@@ -80,13 +61,11 @@ class BallGenerator:
         while self.running:
             start_time = time.time()
             
-            # Create frame
             frame = self._create_frame()
             self.frame_count += 1
             
-            # Add to queue with better management
-            if self.frame_queue.qsize() >= self.frame_queue.maxsize * 0.8:  # 80% full
-                # Remove oldest frame to make room
+            # Manage queue size
+            if self.frame_queue.qsize() >= 25:
                 try:
                     self.frame_queue.get_nowait()
                 except:
@@ -97,7 +76,7 @@ class BallGenerator:
             except:
                 pass
             
-            # Sleep to maintain frame rate
+            # Control frame rate
             elapsed = time.time() - start_time
             if elapsed < frame_time:
                 time.sleep(frame_time - elapsed)
@@ -105,50 +84,45 @@ class BallGenerator:
         logger.debug("Ball generator thread stopped")
     
     def _create_frame(self):
-        """Create a single frame with bouncing ball"""
-        # Create blank frame
         frame = np.full((self.height, self.width, 3), self.background_color, dtype=np.uint8)
         
-        # Update ball position
+        # Move ball
         self.ball_x += self.ball_vx
         self.ball_y += self.ball_vy
         
-        # Bounce off walls
+        # Bounce off edges
         if self.ball_x - self.ball_radius <= 0 or self.ball_x + self.ball_radius >= self.width:
             self.ball_vx = -self.ball_vx
         if self.ball_y - self.ball_radius <= 0 or self.ball_y + self.ball_radius >= self.height:
             self.ball_vy = -self.ball_vy
         
-        # Keep ball in bounds
+        # Keep ball on screen
         self.ball_x = max(self.ball_radius, min(self.width - self.ball_radius, self.ball_x))
         self.ball_y = max(self.ball_radius, min(self.height - self.ball_radius, self.ball_y))
         
-        # Draw ball (simple circle)
+        # Draw the ball
         cv2.circle(frame, (int(self.ball_x), int(self.ball_y)), self.ball_radius, self.ball_color, -1)
         
         return frame
     
     def get_frame(self):
-        """Get the latest frame (non-blocking)"""
         try:
             frame = self.frame_queue.get_nowait()
             return frame
         except:
-            # No frame available, create a fallback frame
+            # Create a simple frame if queue is empty
             fallback_frame = np.full((self.height, self.width, 3), self.background_color, dtype=np.uint8)
-            # Draw a static ball in the center
             cv2.circle(fallback_frame, (self.width // 2, self.height // 2), self.ball_radius, self.ball_color, -1)
             return fallback_frame
     
     def get_stats(self):
-        """Get current statistics"""
         return {
             'fps': self.fps,
-            'frame_queue_size': self.frame_queue.qsize(),
-            'ball_position': (self.ball_x, self.ball_y),
-            'ball_velocity': (self.ball_vx, self.ball_vy),
+            'queue_size': self.frame_queue.qsize(),
+            'ball_pos': (self.ball_x, self.ball_y),
+            'ball_vel': (self.ball_vx, self.ball_vy),
             'ball_radius': self.ball_radius,
             'resolution': (self.width, self.height),
             'running': self.running,
-            'total_frames_generated': self.frame_count
+            'frames_generated': self.frame_count
         } 

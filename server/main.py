@@ -1,7 +1,3 @@
-"""
-WebTransport + WebRTC Server Main Entry Point
-"""
-
 import asyncio
 import logging
 import ssl
@@ -13,14 +9,12 @@ import signal
 from aioquic.asyncio import serve
 from aioquic.quic.configuration import QuicConfiguration
 
-from .protocol import WebTransportProtocol
-
+from .webrtc_handler import WebTransportProtocol
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
 
 logging.getLogger('aiortc').setLevel(logging.WARNING)
 logging.getLogger('aioice').setLevel(logging.WARNING)
@@ -29,7 +23,6 @@ logging.getLogger('quic').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 async def main():
-    """Main server function"""
     parser = argparse.ArgumentParser(description='WebTransport server')
     parser.add_argument('--cert', type=str, required=True)
     parser.add_argument('--key', type=str, required=True)
@@ -38,38 +31,34 @@ async def main():
     
     args = parser.parse_args()
     
-    
     cert_file = args.cert
     key_file = args.key
     
     if not os.path.exists(cert_file) or not os.path.exists(key_file):
-        logger.error(f"SSL certificate files not found: {cert_file}, {key_file}")
+        logger.error(f"Certificate files not found: {cert_file}, {key_file}")
         sys.exit(1)
     
-    # Create QUIC configuration
     quic_config = QuicConfiguration(
         is_client=False,
         alpn_protocols=["h3"],
     )
     
-    # Load certificates
     try:
         quic_config.load_cert_chain(cert_file, key_file)
-        logger.info("Certificates loaded successfully")
+        logger.info("Certificates loaded")
     except Exception as e:
         logger.error(f"Error loading certificates: {e}")
         sys.exit(1)
     
-    # Create server
     host = args.host
     port = args.port
     
-    logger.info(f"Starting WebTransport server on {host}:{port}")
+    logger.info(f"Starting server on {host}:{port}")
     
     stop_event = asyncio.Event()
 
     def handle_signal():
-        logger.info("Shutdown signal received, stopping server...")
+        logger.info("Shutdown signal received")
         stop_event.set()
 
     loop = asyncio.get_running_loop()
@@ -77,7 +66,6 @@ async def main():
         try:
             loop.add_signal_handler(sig, handle_signal)
         except NotImplementedError:
-            
             pass
 
     try:
@@ -88,12 +76,10 @@ async def main():
             create_protocol=WebTransportProtocol,
         )
         
-
-        # await asyncio.Future() 
-        logger.info("Server started successfully")
+        logger.info("Server started")
 
         await stop_event.wait()
-        logger.info("Shutting down gracefully...")
+        logger.info("Shutting down...")
         server.close()
  
         for protocol in list(server._protocols):

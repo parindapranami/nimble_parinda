@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-WebRTC Handler Module
-Handles WebRTC connections and signaling
-"""
-
 import asyncio
 import json
 import logging
@@ -16,13 +10,58 @@ import numpy as np
 import cv2
 import time
 
+from aioquic.asyncio import QuicConnectionProtocol
+from aioquic.h3.connection import H3Connection
+from aioquic.h3.events import HeadersReceived, WebTransportStreamDataReceived, H3Event
+from aioquic.quic.events import QuicEvent, ProtocolNegotiated, StreamReset
+
 from .ball_generator import BallGenerator
 
 logger = logging.getLogger(__name__)
 
-class WebRtcHandler:
-    """Handles WebRTC connections and signaling"""
+class WebTransportProtocol(QuicConnectionProtocol):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._http: Optional[H3Connection] = None
+        self._handler: Optional[WebRtcHandler] = None
     
+    def quic_event_received(self, event: QuicEvent) -> None:
+        if isinstance(event, ProtocolNegotiated):
+            self._http = H3Connection(self._quic, enable_webtransport=True)
+        elif isinstance(event, StreamReset) and self._handler is not None:
+            self._handler.stream_closed(event.stream_id)
+        
+        if self._http is not None:
+            for h3_event in self._http.handle_event(event):
+                self._h3_event_received(h3_event)
+    
+    def _h3_event_received(self, event: H3Event) -> None:
+        if not self._http:
+            return
+            
+        if isinstance(event, HeadersReceived):
+            headers = dict(event.headers)
+            method = headers.get(b":method")
+            protocol = headers.get(b":protocol")
+            path = headers.get(b":path")
+
+            if method == b"CONNECT" and protocol == b"webtransport" and path == b"/connection":
+                logger.info("WebTransport connection accepted")
+                self._handler = WebRtcHandler(event.stream_id, self._http)
+                self._http.send_headers(
+                    stream_id=event.stream_id,
+                    headers=[
+                        (b":status", b"200"),
+                        (b"sec-webtransport-http3-draft", b"draft02"),
+                    ]
+                )
+        elif isinstance(event, WebTransportStreamDataReceived):
+            pass
+        
+        if self._handler:
+            self._handler.h3_event_received(event)
+
+class WebRtcHandler:
     def __init__(self, session_id: int, http_connection):
         self._session_id = session_id
         self._http = http_connection
@@ -43,7 +82,6 @@ class WebRtcHandler:
         logger.info(f"WebRtcHandler initialized for session: {session_id}")
     
     def h3_event_received(self, event):
-        """Handle HTTP/3 events"""
         if hasattr(event, 'stream_id') and hasattr(event, 'data') and hasattr(event, 'stream_ended'):
             # Handle unidirectional stream data (SDP offer or coords)
             if event.stream_id not in self._stream_buffers:
@@ -53,7 +91,7 @@ class WebRtcHandler:
                 self._stream_buffers[event.stream_id].extend(event.data)
             
             if event.stream_ended:
-                logger.info(f"Stream {event.stream_id} ended, processing complete message")
+                logger.info(f"Stream {event.stream_id} ended, processing message")
                 data = bytes(self._stream_buffers[event.stream_id])
                 
                 # Try to parse as JSON to determine message type
@@ -67,7 +105,7 @@ class WebRtcHandler:
                         self._tasks.add(task)
                         task.add_done_callback(self._tasks.discard)
                     elif message_type == 'coords':
-                        logger.info(f"Received coords from client: {message}")
+                        
                         task = asyncio.create_task(self.handle_client_coords(message))
                         self._tasks.add(task)
                         task.add_done_callback(self._tasks.discard)
@@ -82,7 +120,6 @@ class WebRtcHandler:
                 del self._stream_buffers[event.stream_id]
     
     def stream_closed(self, stream_id: int):
-        """Handle stream closure"""
         try:
             if stream_id in self._stream_buffers:
                 del self._stream_buffers[stream_id]
@@ -90,10 +127,9 @@ class WebRtcHandler:
             pass
     
     async def handle_sdp_offer(self, raw_data: bytes):
-        """Handle WebRTC SDP offer and create answer"""
         try:
             data = json.loads(raw_data.decode())
-            logger.info(f"Processing SDP offer: {data.get('type', 'unknown')}")
+            logger.info(f"Processing SDP offer")
             
             if 'type' not in data or 'sdp' not in data:
                 logger.error("Invalid SDP offer format")
@@ -144,7 +180,7 @@ class WebRtcHandler:
             logger.info("Remote description set")
             
             # Add video track BEFORE creating answer to ensure ICE candidates are generated
-            self.ball_generator = BallGenerator(width=640, height=480, fps=30)  # Reduced to 10 FPS
+            self.ball_generator = BallGenerator(width=640, height=480, fps=10)
             self.ball_generator.start()
             
             video_track = BallVideoTrack(self.ball_generator)
@@ -176,7 +212,7 @@ class WebRtcHandler:
             )
             answer_data = json.dumps(answer_message).encode()
             self._http._quic.send_stream_data(stream_id, answer_data, end_stream=True)
-            logger.info("SDP answer sent via stream")
+            logger.info("SDP answer sent")
             
         except Exception as e:
             logger.error(f"Error handling SDP offer: {e}")
@@ -184,7 +220,6 @@ class WebRtcHandler:
             traceback.print_exc()
     
     async def _wait_for_ice_gathering(self, pc):
-        """Wait for ICE gathering to complete"""
         if pc.iceGatheringState == 'complete':
             logger.info("ICE gathering already complete")
             return
@@ -198,13 +233,11 @@ class WebRtcHandler:
         logger.info("ICE gathering completed")
     
     async def start_video_stream(self):
-        """Start video streaming"""
         if self.video_task is None:
             self.video_task = asyncio.create_task(self._stream_video())
             logger.info("Video streaming started")
     
     async def stop_video_stream(self):
-        """Stop video streaming"""
         if self.video_task:
             self.video_task.cancel()
             self.video_task = None
@@ -219,18 +252,17 @@ class WebRtcHandler:
         """Stream video frames"""
         try:
             while True:
-                await asyncio.sleep(0.1)  # 10 FPS
+                await asyncio.sleep(0.1) 
         except asyncio.CancelledError:
             logger.info("Video streaming cancelled")
         except Exception as e:
             logger.error(f"Error in video streaming: {e}")
 
     async def handle_client_coords(self, message):
-        """Compute error and send it back to the client via WebTransport"""
         try:
             x = message.get('x')
             y = message.get('y')
-            logger.info(f"handle_client_coords: received coords from client: x={x}, y={y}")
+            
             if x is None or y is None:
                 logger.warning("Received coords missing x or y")
                 return
@@ -238,8 +270,8 @@ class WebRtcHandler:
             if self.ball_generator:
                 true_x = int(self.ball_generator.ball_x)
                 true_y = int(self.ball_generator.ball_y)
-                error = ((x - true_x) ** 2 + (y - true_y) ** 2) ** 0.5
-                logger.info(f"Computed error: {error:.2f} (client: ({x},{y}), true: ({true_x},{true_y}))")
+                error = ((x - true_x) ** 2 + (y - true_y) ** 2) ** 0.5 # error: distance between client and true ball center
+                logger.info(f"Error: {error:.2f} (client: ({x},{y}), true: ({true_x},{true_y}))")
             else:
                 error = None
                 logger.warning("Ball generator not running, cannot compute error")
@@ -252,7 +284,7 @@ class WebRtcHandler:
                 'true_x': true_x if self.ball_generator else None,
                 'true_y': true_y if self.ball_generator else None
             }
-            logger.info(f"Sending error message to client: {error_message}")
+            logger.info(f"Sending error message to client")
             stream_id = self._http.create_webtransport_stream(
                 self._session_id,
                 is_unidirectional=True
@@ -262,7 +294,6 @@ class WebRtcHandler:
             logger.error(f"Error in handle_client_coords: {e}")
 
     async def cleanup(self):
-        """Cancel all pending tasks and close peer connection cleanly."""
         logger.info("WebRtcHandler cleanup: Cancelling all pending tasks and closing peer connection.")
         for task in list(self._tasks):
             task.cancel()
@@ -274,7 +305,7 @@ class WebRtcHandler:
 
 
 class BallVideoTrack(MediaStreamTrack):
-    """Custom video track for streaming ball animation"""
+
     kind = "video"
     
     def __init__(self, ball_generator):
@@ -285,12 +316,12 @@ class BallVideoTrack(MediaStreamTrack):
         logger.info("BallVideoTrack initialized")
     
     async def recv(self):
-        # Calculate proper timing
+        
         current_time = time.time()
-        frame_time = 1.0 / 10  # 10 FPS
+        frame_time = 1.0 / 10 
         expected_frame = int((current_time - self.start_time) / frame_time)
         
-        # Get frame from ball generator
+       
         frame = self.ball_generator.get_frame()
         if frame is None:
             # Create a blank frame if no frame available
@@ -300,13 +331,11 @@ class BallVideoTrack(MediaStreamTrack):
         
         # Convert BGR to RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Create VideoFrame with proper timing
+
         video_frame = VideoFrame.from_ndarray(frame_rgb, format="rgb24")
         video_frame.pts = expected_frame
-        video_frame.time_base = fractions.Fraction(1, 10)  # 10 FPS time base
+        video_frame.time_base = fractions.Fraction(1, 10) 
         
-        # Log every 30 frames to track progress
         if self.frame_count % 30 == 0:
             logger.info(f"BallVideoTrack: sent frame {self.frame_count}, pts={video_frame.pts}")
         

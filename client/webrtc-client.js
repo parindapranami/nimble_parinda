@@ -1,3 +1,6 @@
+// WebRTC client for receiving video stream from server
+// This connects to the server and displays the bouncing ball video
+
 let webTransport = null;
 let peerConnection = null;
 let videoElement = null;
@@ -8,7 +11,7 @@ let logDiv = null;
 let trackingCanvas = null;
 let trackingCtx = null;
 
-// WebRTC configuration
+// WebRTC configuration with STUN servers
 const rtcConfig = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
@@ -17,12 +20,12 @@ const rtcConfig = {
   ],
 };
 
-// Add a flag to only log the error feedback info once
+// Flag to only show error feedback message once
 let errorFeedbackLogged = false;
 
-// Function to force H.264 codec in SDP -
+// Function to make sure we use H.264 codec
 function forceH264(sdp) {
-  console.log("🔧 Forcing H.264 codec in client-side SDP");
+  console.log("Making sure H.264 codec is used");
   const lines = sdp.split("\r\n");
 
   const h264PayloadTypes = new Set();
@@ -37,7 +40,7 @@ function forceH264(sdp) {
   }
 
   if (h264PayloadTypes.size === 0) {
-    console.warn("⚠️ No H.264 payload types found in SDP, returning original");
+    console.warn("No H.264 found in SDP, using original");
     return sdp;
   }
 
@@ -54,7 +57,7 @@ function forceH264(sdp) {
     }
   }
 
-  console.log(`Codecs to keep (H.264 + RTX): ${[...codecsToKeep].join(", ")}`);
+  console.log(`Keeping codecs: ${[...codecsToKeep].join(", ")}`);
 
   const newLines = [];
   let inVideoSection = false;
@@ -70,16 +73,14 @@ function forceH264(sdp) {
         codecsToKeep.has(pt)
       );
       if (filteredPayloads.length === 0) {
-        console.warn(
-          "⚠️ No matching H.264 payloads found for m=video, keeping original"
-        );
+        console.warn("No H.264 payloads found, keeping original");
         newLines.push(line);
         continue;
       }
 
       const newMLine = [...header, ...filteredPayloads].join(" ");
       newLines.push(newMLine);
-      console.log(`✅ Rewritten m-line: ${newMLine}`);
+      console.log(`New m-line: ${newMLine}`);
     } else if (
       inVideoSection &&
       (line.startsWith("a=rtpmap:") ||
@@ -102,19 +103,19 @@ function forceH264(sdp) {
     }
   }
 
+  // Check if we still have video and H.264
   const hasVideoMLine = newLines.some((l) => l.startsWith("m=video"));
   const hasH264 = newLines.some((l) => l.includes("H264"));
   if (!hasVideoMLine || !hasH264) {
-    console.error(
-      "SDP rewrite failed, missing m=video or H264. Reverting to original SDP."
-    );
+    console.error("SDP rewrite failed, using original");
     return sdp;
   }
 
-  console.log("SDP modification complete");
+  console.log("SDP modification done");
   return newLines.join("\r\n");
 }
 
+// Add message to log with timestamp
 function log(message) {
   const timestamp = new Date().toLocaleTimeString();
   logDiv.innerHTML += `[${timestamp}] ${message}<br>`;
@@ -122,38 +123,40 @@ function log(message) {
   console.log(message);
 }
 
-// Update status
+// Update the status display
 function updateStatus(status, className) {
   statusDiv.textContent = `Status: ${status}`;
   statusDiv.className = `status ${className}`;
 }
 
-// Connect to WebTransport and establish WebRTC
+// Main connection function
 async function connect() {
   try {
     updateStatus("Connecting...", "connecting");
     connectBtn.disabled = true;
 
-    log("Simple web app client initialized");
-    log("Client ready to connect to server");
-    log("Click Connect to start WebRTC + WebTransport connection");
+    log("Starting connection to server");
+    log("Setting up WebTransport connection");
 
+    // Connect to WebTransport
     webTransport = new WebTransport("https://localhost:4433/connection");
-
     await webTransport.ready;
-    log("WebTransport connection established successfully");
+    log("WebTransport connected successfully");
 
+    // Create WebRTC peer connection
     peerConnection = new RTCPeerConnection(rtcConfig);
 
+    // Create offer for video
     const offer = await peerConnection.createOffer({
       offerToReceiveVideo: true,
       offerToReceiveAudio: false,
     });
 
+    // Force H.264 codec
     offer.sdp = forceH264(offer.sdp);
-
     await peerConnection.setLocalDescription(offer);
 
+    // Wait for ICE gathering to complete
     await new Promise((resolve) => {
       if (peerConnection.iceGatheringState === "complete") {
         resolve();
@@ -168,7 +171,7 @@ async function connect() {
 
     const finalOffer = peerConnection.localDescription;
 
-    // Send offer via unidirectional stream
+    // Send offer to server
     const writer = (
       await webTransport.createUnidirectionalStream()
     ).getWriter();
@@ -182,10 +185,12 @@ async function connect() {
     const offerData = encoder.encode(JSON.stringify(offerMessage));
     await writer.write(offerData);
     await writer.close();
-    log("SDP offer sent to server via WebTransport");
+    log("SDP offer sent to server");
 
+    // Handle incoming video track
     peerConnection.ontrack = (event) => {
       if (event.track.kind === "video") {
+        // Check what codec is actually being used
         const checkCodec = async () => {
           try {
             if (
@@ -208,62 +213,50 @@ async function connect() {
 
               if (activeCodec) {
                 if (activeCodec.mimeType.toLowerCase() === "video/h264") {
-                  log(
-                    `VERIFIED - Active codec is H.264. MimeType: ${activeCodec.mimeType}, ClockRate: ${activeCodec.clockRate}`
-                  );
+                  log(`Codec check: Using H.264 (${activeCodec.mimeType})`);
                 } else {
-                  log(
-                    `WARNING - Active codec is NOT H.264. Active codec: ${activeCodec.mimeType}`
-                  );
+                  log(`Codec check: Using ${activeCodec.mimeType} (not H.264)`);
                 }
               } else {
-                log("Could not determine active codec from stats.");
+                log("Could not check codec from stats");
               }
             }
           } catch (e) {
-            log(`Could not verify codec using getStats(): ${e.message}`);
+            log(`Codec check failed: ${e.message}`);
           }
         };
         setTimeout(checkCodec, 1000);
 
+        // Set up video element
         videoElement.autoplay = true;
         videoElement.playsInline = true;
         videoElement.muted = true;
         videoElement.controls = false;
 
         videoElement.srcObject = event.streams[0];
-        log("Video stream attached to browser video element");
+        log("Video stream connected to video element");
 
         videoElement.onloadedmetadata = () => {
           videoElement.play().catch((e) => log(`Auto-play failed: ${e}`));
         };
 
-        videoElement.onplay = () => {};
-
         videoElement.onerror = (e) => {
           log(`Video error: ${e}`);
         };
 
-        videoElement.oncanplay = () => {};
-
-        videoElement.onloadeddata = () => {};
-
-        videoElement.onwaiting = () => {};
-
         videoElement.onplaying = () => {
-          log(
-            "[onplaying] Video is playing in browser, starting coordinate sending loop"
-          );
+          log("Starting ball tracking");
 
           setupBallTracking();
 
           const canvas = document.getElementById("hiddenCanvas");
           const ctx = canvas.getContext("2d");
 
+          // Loop to track ball position
           function trackLoop() {
             const pos = estimateBallCenterFromVideo(videoElement, canvas, ctx);
             if (pos) {
-              // Ball center estimated, send to server
+              // Send ball coordinates to server
               if (webTransport) {
                 webTransport
                   .createUnidirectionalStream()
@@ -279,15 +272,11 @@ async function connect() {
                       .write(new TextEncoder().encode(message))
                       .then(() => writer.close())
                       .catch((err) =>
-                        console.error(
-                          `[BallCoord] Error writing coordinates to server: ${err}`
-                        )
+                        console.error(`Error sending coordinates: ${err}`)
                       );
                   })
                   .catch((err) =>
-                    console.error(
-                      `[BallCoord] Error creating unidirectional stream: ${err}`
-                    )
+                    console.error(`Error creating stream: ${err}`)
                   );
               }
             }
@@ -297,14 +286,15 @@ async function connect() {
           requestAnimationFrame(trackLoop);
         };
 
+        // Try to play video
         setTimeout(() => {
           videoElement
             .play()
             .then(() => {
-              log("Video play() succeeded in browser");
+              log("Video started playing");
             })
             .catch((error) => {
-              log(`Video play() failed: ${error}`);
+              log(`Video play failed: ${error}`);
             });
         }, 100);
       }
@@ -315,9 +305,8 @@ async function connect() {
       if (peerConnection.connectionState === "connected") {
         updateStatus("Connected", "connected");
         disconnectBtn.disabled = false;
-        log("WebRTC connection established successfully");
-        log("WebTransport connection active");
-        log("Ready to receive video stream from server");
+        log("WebRTC connection successful");
+        log("Ready to receive video");
       } else if (
         peerConnection.connectionState === "failed" ||
         peerConnection.connectionState === "closed"
@@ -331,7 +320,7 @@ async function connect() {
       }
     };
 
-    // Handle ICE connection state changes
+    // Handle ICE connection state
     peerConnection.oniceconnectionstatechange = () => {
       if (peerConnection.iceConnectionState === "connected") {
         log("ICE connection established");
@@ -345,24 +334,23 @@ async function connect() {
       }
     };
 
-    peerConnection.onsignalingstatechange = () => {};
-
-    // Read answer from incoming unidirectional stream
+    // Read server responses
     const incomingStream =
       await webTransport.incomingUnidirectionalStreams.getReader();
 
     handleIncomingStreams(incomingStream);
 
-    log("WebRTC connection established successfully");
+    log("Connection setup complete");
   } catch (error) {
-    log(`Error during connection: ${error.message}`);
+    log(`Connection error: ${error.message}`);
     updateStatus("Connection Failed", "disconnected");
     connectBtn.disabled = false;
   }
 }
 
+// Show error messages from server
 function displayError(error, data) {
-  console.log(`[ERROR FEEDBACK] Error from server: ${error}`);
+  console.log(`Server error: ${error}`);
   let errorDiv = document.getElementById("errorDiv");
   if (!errorDiv) {
     errorDiv = document.createElement("div");
@@ -386,12 +374,13 @@ function displayError(error, data) {
   }
 }
 
+// Handle messages from server
 async function handleIncomingStreams(incomingStream) {
   try {
     while (true) {
       const { value: stream, done } = await incomingStream.read();
       if (done) {
-        log("Incoming stream reader done");
+        log("Server stream ended");
         break;
       }
 
@@ -401,25 +390,23 @@ async function handleIncomingStreams(incomingStream) {
       const data = JSON.parse(decoder.decode(response));
 
       if (data.type === "answer") {
-        log("Received SDP answer from server");
+        log("Got SDP answer from server");
         await peerConnection.setRemoteDescription(
           new RTCSessionDescription(data)
         );
-        log("Remote description set from server response");
+        log("Remote description set");
       } else if (data.type === "error") {
         if (!errorFeedbackLogged) {
-          log(
-            "Ball error feedback is now being calculated by the server and displayed below the video."
-          );
+          log("Server will show ball detection errors below video");
           errorFeedbackLogged = true;
         }
         displayError(data.error, data);
       } else {
-        log(`Unknown message type: ${data.type}`);
+        log(`Unknown message: ${data.type}`);
       }
     }
   } catch (error) {
-    log(`Error handling incoming streams: ${error.message}`);
+    log(`Error reading server messages: ${error.message}`);
 
     if (
       error.message.includes("Connection lost") ||
@@ -433,7 +420,7 @@ async function handleIncomingStreams(incomingStream) {
   }
 }
 
-// Disconnect
+// Disconnect from server
 async function disconnect() {
   try {
     if (peerConnection) {
@@ -453,10 +440,11 @@ async function disconnect() {
     connectBtn.disabled = false;
     disconnectBtn.disabled = true;
   } catch (error) {
-    log(`Error during disconnect: ${error.message}`);
+    log(`Disconnect error: ${error.message}`);
   }
 }
 
+// Initialize the client when page loads
 function initializeClient() {
   videoElement = document.getElementById("videoElement");
   statusDiv = document.getElementById("status");
@@ -467,15 +455,17 @@ function initializeClient() {
   window.canvas = document.getElementById("hiddenCanvas");
   window.ctx = window.canvas.getContext("2d");
 
+  // Clean up when page closes
   window.addEventListener("beforeunload", () => {
     disconnect();
   });
 
   log("---Nimble Programming Challenge - 2025---");
-  log("Simple web app client initialized");
-  log("Click Connect to start WebRTC + WebTransport connection");
+  log("WebRTC client ready");
+  log("Click Connect to start");
 }
 
+// Clear the log display
 function clearLog() {
   if (logDiv) {
     logDiv.innerHTML = "";
@@ -483,13 +473,8 @@ function clearLog() {
   }
 }
 
-window.connect = connect;
-window.disconnect = disconnect;
-window.initializeClient = initializeClient;
-window.clearLog = clearLog;
-
+// Set up ball tracking canvas
 function setupBallTracking() {
-  // Create a hidden canvas for frame extraction
   trackingCanvas = document.createElement("canvas");
   trackingCanvas.width = 640;
   trackingCanvas.height = 480;
@@ -498,7 +483,7 @@ function setupBallTracking() {
   trackingCtx = trackingCanvas.getContext("2d");
 }
 
-// Estimate ball center by scanning for green ball
+// Find the green ball in the video frame
 function estimateBallCenterFromVideo(videoElement, canvas, ctx) {
   ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
   const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -508,14 +493,14 @@ function estimateBallCenterFromVideo(videoElement, canvas, ctx) {
   let totalY = 0;
   let count = 0;
 
-  // Thresholds for detecting "green"
+  // Look for green pixels (the ball)
   for (let y = 0; y < canvas.height; y++) {
     for (let x = 0; x < canvas.width; x++) {
       const i = (y * canvas.width + x) * 4;
       const r = data[i];
       const g = data[i + 1];
       const b = data[i + 2];
-      // Simple green ball detection
+
       if (g > 150 && g > r + 60 && g > b + 60) {
         totalX += x;
         totalY += y;
@@ -531,3 +516,9 @@ function estimateBallCenterFromVideo(videoElement, canvas, ctx) {
 
   return { x: cx, y: cy };
 }
+
+// Make functions available to HTML
+window.connect = connect;
+window.disconnect = disconnect;
+window.initializeClient = initializeClient;
+window.clearLog = clearLog;
