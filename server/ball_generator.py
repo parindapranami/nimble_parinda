@@ -3,7 +3,7 @@
 import threading
 import time
 import numpy as np
-import cv2
+from PIL import Image, ImageDraw
 from queue import Queue
 import logging
 
@@ -33,7 +33,7 @@ class BallGenerator:
         logger.debug(f"BallGenerator initialized: {width}x{height} @ {self.fps}fps")
         
     def start(self):
-        """Start the ball generation thread"""
+        
         if not self.running:
             self.running = True
             self.thread = threading.Thread(target=self._generate_frames, daemon=True)
@@ -54,7 +54,7 @@ class BallGenerator:
         logger.info(f"Frame rate changed to {self.fps} FPS")
     
     def _generate_frames(self):
-        """Generate frames in a separate thread"""
+        
         logger.debug("Ball generator thread started")
         frame_time = 1.0 / self.fps
         
@@ -84,25 +84,31 @@ class BallGenerator:
         logger.debug("Ball generator thread stopped")
     
     def _create_frame(self):
-        frame = np.full((self.height, self.width, 3), self.background_color, dtype=np.uint8)
-        
+        # Create a PIL image with the background color
+        img = Image.new('RGB', (self.width, self.height), self.background_color)
+        draw = ImageDraw.Draw(img)
+
         # Move ball
         self.ball_x += self.ball_vx
         self.ball_y += self.ball_vy
-        
+
         # Bounce off edges
         if self.ball_x - self.ball_radius <= 0 or self.ball_x + self.ball_radius >= self.width:
             self.ball_vx = -self.ball_vx
         if self.ball_y - self.ball_radius <= 0 or self.ball_y + self.ball_radius >= self.height:
             self.ball_vy = -self.ball_vy
-        
+
         # Keep ball on screen
         self.ball_x = max(self.ball_radius, min(self.width - self.ball_radius, self.ball_x))
         self.ball_y = max(self.ball_radius, min(self.height - self.ball_radius, self.ball_y))
-        
+
         # Draw the ball
-        cv2.circle(frame, (int(self.ball_x), int(self.ball_y)), self.ball_radius, self.ball_color, -1)
-        
+        left_up = (int(self.ball_x - self.ball_radius), int(self.ball_y - self.ball_radius))
+        right_down = (int(self.ball_x + self.ball_radius), int(self.ball_y + self.ball_radius))
+        draw.ellipse([left_up, right_down], fill=self.ball_color)
+
+        # Convert PIL image to numpy array
+        frame = np.array(img)
         return frame
     
     def get_frame(self):
@@ -111,8 +117,12 @@ class BallGenerator:
             return frame
         except:
             # Create a simple frame if queue is empty
-            fallback_frame = np.full((self.height, self.width, 3), self.background_color, dtype=np.uint8)
-            cv2.circle(fallback_frame, (self.width // 2, self.height // 2), self.ball_radius, self.ball_color, -1)
+            img = Image.new('RGB', (self.width, self.height), self.background_color)
+            draw = ImageDraw.Draw(img)
+            left_up = (self.width // 2 - self.ball_radius, self.height // 2 - self.ball_radius)
+            right_down = (self.width // 2 + self.ball_radius, self.height // 2 + self.ball_radius)
+            draw.ellipse([left_up, right_down], fill=self.ball_color)
+            fallback_frame = np.array(img)
             return fallback_frame
     
     def get_stats(self):
